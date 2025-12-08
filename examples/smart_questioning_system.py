@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -73,6 +74,15 @@ class QuestionTemplate:
     example: str | None = None
 
 
+DB_CONFIG = {
+    "host": "10.250.2.19",
+    "port": 3306,
+    "user": "root",
+    "password": "hwits888",
+    "database": "pingshan",
+}
+
+
 class SmartDataEngine:
     """极简数据引擎，用于支撑演示级别的工具调用。
 
@@ -85,10 +95,14 @@ class SmartDataEngine:
         schemas: List[TableSchema],
         vocabulary: List[BusinessVocabulary],
         templates: List[QuestionTemplate],
+        db_config: Optional[Dict[str, Any]] = None,
+        connect_timeout: int = 5,
     ) -> None:
         self._schemas = {schema.name: schema for schema in schemas}
         self._vocabulary = vocabulary
         self._templates = templates
+        self._db_config = db_config
+        self._connect_timeout = connect_timeout
 
     # === 查询结构化配置 ===
     def list_tables(self) -> str:
@@ -136,16 +150,51 @@ class SmartDataEngine:
 
     # === 模拟执行能力 ===
     def execute_sql(self, sql: str) -> Dict[str, Any]:
-        """模拟 SQL 执行，返回可预期的结构化结果。"""
+        """执行 SQL，若无法连接数据库则回退到模拟结果。"""
 
-        return {
-            "status": "success",
-            "sql": sql,
-            "rows": [
-                {"示例字段": "value", "count": 42},
-            ],
-            "note": "已模拟执行，真实环境请替换为数据库连接。",
-        }
+        if not self._db_config:
+            return {
+                "status": "mock",
+                "sql": sql,
+                "rows": [{"示例字段": "value", "count": 42}],
+                "note": "未提供数据库配置，已返回模拟结果。",
+            }
+
+        connector_spec = importlib.util.find_spec("mysql.connector")
+        if connector_spec is None:
+            return {
+                "status": "mock",
+                "sql": sql,
+                "rows": [{"示例字段": "value", "count": 42}],
+                "note": "未检测到 mysql-connector-python，请安装后再试，当前返回模拟结果。",
+            }
+
+        import mysql.connector  # type: ignore
+
+        connection = None
+        try:
+            connection = mysql.connector.connect(
+                **self._db_config, connection_timeout=self._connect_timeout
+            )
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            return {
+                "status": "success",
+                "sql": sql,
+                "rows": rows,
+                "note": "已连接 MySQL 返回真实结果。",
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "error",
+                "sql": sql,
+                "rows": [],
+                "note": f"查询失败，已回退到模拟模式: {exc}",
+            }
+        finally:
+            if connection is not None:
+                connection.close()
 
     def call_api(self, api_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """模拟业务 API 调用。"""
@@ -291,52 +340,137 @@ def create_smart_questioning_agent() -> Any:
     schemas = [
         TableSchema(
             name="pingshan_stat_info",
-            zh_name="坪山区事件统计信息表",
-            usage="记录所有上报事件的详细信息和处理状态",
-            primary_key="EVENT_ID",
-            indexes=["CREATE_TIME", "first_unit_name", "SUB_TYPE_NAME"],
+            zh_name="坪山事件统计信息表",
+            usage="记录坪山区上报事件的详细信息、来源渠道、处置单位与进度。",
+            primary_key="REC_ID",
+            indexes=[
+                "CREATE_TIME",
+                "STREET_NAME",
+                "COMMUNITY_NAME",
+                "SUB_TYPE_NAME",
+                "EVENT_SRC_NAME",
+                "REC_TYPE_NAME",
+                "first_unit_name",
+            ],
             fields=[
                 TableField(
-                    name="EVENT_ID",
-                    dtype="VARCHAR(20)",
-                    zh_name="事件编号",
-                    meaning="唯一标识事件的编号",
-                    example="PS20250304001",
+                    name="REC_ID",
+                    dtype="BIGINT",
+                    zh_name="记录主键",
+                    meaning="主键，唯一标识一条事件记录。",
+                    example="1782698",
                 ),
                 TableField(
-                    name="EVENT_SRC_NAME",
-                    dtype="VARCHAR(50)",
-                    zh_name="事件来源",
-                    meaning="事件的上报渠道或来源系统",
-                    example="12345热线",
-                ),
-                TableField(
-                    name="first_unit_name",
-                    dtype="VARCHAR(100)",
-                    zh_name="处理单位",
-                    meaning="首次负责处理该事件的单位名称",
-                    example="坪山街道办事处",
-                ),
-                TableField(
-                    name="SUB_TYPE_NAME",
-                    dtype="VARCHAR(50)",
-                    zh_name="事件子类型",
-                    meaning="事件的具体分类",
-                    example="暴露垃圾",
+                    name="TASK_NUM",
+                    dtype="VARCHAR(40)",
+                    zh_name="任务编号",
+                    meaning="事件在工单系统中的编号。",
+                    example="SZPS202502252032300001",
                 ),
                 TableField(
                     name="CREATE_TIME",
                     dtype="TIMESTAMP",
                     zh_name="创建时间",
-                    meaning="事件在系统中的创建时间",
-                    example="2025-03-04 14:30:00",
+                    meaning="事件被创建/上报的时间戳。",
+                    example="2025-03-04 11:00:00",
+                ),
+                TableField(
+                    name="ADDRESS",
+                    dtype="TEXT",
+                    zh_name="地址",
+                    meaning="事件发生的详细地址。",
+                    example="坪山区环盛路万樾府",
+                ),
+                TableField(
+                    name="STREET_NAME",
+                    dtype="VARCHAR(40)",
+                    zh_name="街道",
+                    meaning="事件所属街道名称。",
+                    example="坪山街道",
+                ),
+                TableField(
+                    name="COMMUNITY_NAME",
+                    dtype="VARCHAR(40)",
+                    zh_name="社区",
+                    meaning="事件所属社区名称。",
+                    example="六和社区",
+                ),
+                TableField(
+                    name="EVENT_SRC_NAME",
+                    dtype="VARCHAR(50)",
+                    zh_name="事件来源",
+                    meaning="事件的来源渠道，例如 i深圳app、物联感知等。",
+                    example="i深圳app",
+                ),
+                TableField(
+                    name="REC_TYPE_NAME",
+                    dtype="VARCHAR(40)",
+                    zh_name="渠道类型",
+                    meaning="事件录入渠道类型，如市一体化平台、机动中队采集等。",
+                    example="市一体化平台",
+                ),
+                TableField(
+                    name="first_unit_name",
+                    dtype="VARCHAR(200)",
+                    zh_name="首处置单位",
+                    meaning="首个接单/处置单位名称。",
+                    example="坪山街道办事处",
+                ),
+                TableField(
+                    name="SUB_TYPE_NAME",
+                    dtype="VARCHAR(100)",
+                    zh_name="事件小类",
+                    meaning="事件的小类名称，例如暴露垃圾、房屋租赁等。",
+                    example="暴露垃圾",
+                ),
+                TableField(
+                    name="THIRD_TYPE_NAME",
+                    dtype="VARCHAR(100)",
+                    zh_name="事件三级类",
+                    meaning="更细分的事件类别，用于精准筛选。",
+                    example="无照经营游商",
+                ),
+                TableField(
+                    name="MAX_EVENT_TYPE_NAME",
+                    dtype="VARCHAR(200)",
+                    zh_name="最大事件类",
+                    meaning="汇总意义的事件类别，用于热点和统计。",
+                    example="暴露垃圾",
+                ),
+                TableField(
+                    name="MAIN_TYPE_NAME",
+                    dtype="VARCHAR(40)",
+                    zh_name="事件一级类",
+                    meaning="事件一级分类，例如市容秩序、教学管理等。",
+                    example="市容秩序",
                 ),
                 TableField(
                     name="EVENT_DESC",
                     dtype="TEXT",
                     zh_name="事件描述",
-                    meaning="事件的详细描述信息",
-                    example="小区门口垃圾堆积...",
+                    meaning="市民或系统提交的详细事件描述文本。",
+                    example="标题：市民反映居民用水问题……",
+                ),
+                TableField(
+                    name="origin_marks",
+                    dtype="TEXT",
+                    zh_name="主体标签",
+                    meaning="案件关联的主体/地点标签，用于统计高发主体。",
+                    example="地理标签/小区/万樾府",
+                ),
+                TableField(
+                    name="hotpoint_marks",
+                    dtype="TEXT",
+                    zh_name="热点标签",
+                    meaning="案件热点标注，可用于筛选高频主题。",
+                    example="热点事件标签/2025年高频热点/万樾府水质问题",
+                ),
+                TableField(
+                    name="process_marks",
+                    dtype="TEXT",
+                    zh_name="流程标签",
+                    meaning="流程或督办标签，用于考核与统计。",
+                    example="业务流程标签/督办/区督办/人工催办",
                 ),
             ],
         )
@@ -346,22 +480,35 @@ def create_smart_questioning_agent() -> Any:
         BusinessVocabulary(
             term="处理单位",
             canonical="first_unit_name",
-            synonyms=["负责单位", "责任单位", "处理部门"],
+            synonyms=["负责单位", "责任单位", "处置单位", "接单单位"],
             field_name="first_unit_name",
             note="首次处理事件的单位",
         ),
         BusinessVocabulary(
             term="事件类型",
             canonical="SUB_TYPE_NAME",
-            synonyms=["案件类型", "问题类型", "事件分类"],
+            synonyms=["案件类型", "问题类型", "事件分类", "事件小类"],
             field_name="SUB_TYPE_NAME",
+        ),
+        BusinessVocabulary(
+            term="来源渠道",
+            canonical="EVENT_SRC_NAME",
+            synonyms=["渠道", "来源", "上报方式", "事件来源"],
+            field_name="EVENT_SRC_NAME",
+            note="常见值如 i深圳app、物联感知、微信公众号等",
+        ),
+        BusinessVocabulary(
+            term="录入渠道",
+            canonical="REC_TYPE_NAME",
+            synonyms=["事件渠道", "工单渠道", "录入来源"],
+            field_name="REC_TYPE_NAME",
         ),
         BusinessVocabulary(
             term="垃圾事件",
             canonical="垃圾相关事件",
-            synonyms=["暴露垃圾", "垃圾堆积", "垃圾清理"],
+            synonyms=["暴露垃圾", "街面垃圾", "垃圾堆积", "垃圾清理"],
             field_name=None,
-            note="需在描述和类型字段做模糊匹配",
+            note="需在 SUB_TYPE_NAME / THIRD_TYPE_NAME / MAX_EVENT_TYPE_NAME / EVENT_DESC 做模糊匹配",
         ),
         BusinessVocabulary(
             term="本月",
@@ -384,7 +531,7 @@ def create_smart_questioning_agent() -> Any:
             intent="data_query",
             pattern=".*街道.*处理.*多少.*案件",
             sql_template=(
-                "SELECT COUNT(*) FROM pingshan_stat_info "
+                "SELECT COUNT(*) AS 案件数量 FROM pingshan_stat_info "
                 "WHERE first_unit_name LIKE '%{unit_name}%' AND {time_filter}"
             ),
             required_params=["unit_name"],
@@ -393,10 +540,10 @@ def create_smart_questioning_agent() -> Any:
         ),
         QuestionTemplate(
             intent="data_query",
-            pattern=".*事件.*主要来源",
+            pattern=".*主要来源",
             sql_template=(
-                "SELECT EVENT_SRC_NAME, COUNT(*) FROM pingshan_stat_info "
-                "WHERE {event_filter} GROUP BY EVENT_SRC_NAME ORDER BY COUNT(*) DESC"
+                "SELECT EVENT_SRC_NAME AS 事件来源, COUNT(*) AS 数量 FROM pingshan_stat_info "
+                "WHERE {event_filter} GROUP BY EVENT_SRC_NAME ORDER BY 数量 DESC"
             ),
             required_params=["event_filter"],
             example="暴露垃圾事件的主要来源是什么",
@@ -405,15 +552,46 @@ def create_smart_questioning_agent() -> Any:
             intent="data_query",
             pattern="统计.*事件.*数量",
             sql_template=(
-                "SELECT SUB_TYPE_NAME, COUNT(*) FROM pingshan_stat_info "
-                "WHERE SUB_TYPE_NAME IS NOT NULL GROUP BY SUB_TYPE_NAME ORDER BY COUNT(*) DESC"
+                "SELECT SUB_TYPE_NAME AS 事件类型, COUNT(*) AS 事件数量 FROM pingshan_stat_info "
+                "WHERE SUB_TYPE_NAME IS NOT NULL AND SUB_TYPE_NAME <> '' "
+                "GROUP BY SUB_TYPE_NAME ORDER BY 事件数量 DESC"
             ),
             required_params=[],
             example="统计各类型事件的数量",
         ),
+        QuestionTemplate(
+            intent="data_query",
+            pattern=".*上周.*尚未分配.*事件数量",
+            sql_template=(
+                "SELECT COUNT(*) AS 未分配事件数 FROM pingshan_stat_info "
+                "WHERE first_unit_name IS NULL "
+                "AND create_time >= CURDATE() - INTERVAL (DAYOFWEEK(CURDATE()) + 6) DAY "
+                "AND create_time < CURDATE() - INTERVAL (DAYOFWEEK(CURDATE()) - 1) DAY"
+            ),
+            required_params=[],
+            example="上周尚未分配处理单位的事件数量？",
+        ),
+        QuestionTemplate(
+            intent="data_query",
+            pattern=".*本月.*高发事件",
+            sql_template=(
+                "SELECT SUB_TYPE_NAME AS 高发事件类型, COUNT(*) AS 事件数量 FROM pingshan_stat_info "
+                "WHERE CREATE_TIME >= DATE_FORMAT(CURDATE(), '%Y-%m-01') "
+                "AND CREATE_TIME < DATE_FORMAT(CURDATE() + INTERVAL 1 MONTH, '%Y-%m-01') "
+                "AND SUB_TYPE_NAME IS NOT NULL AND SUB_TYPE_NAME <> '' "
+                "GROUP BY SUB_TYPE_NAME ORDER BY 事件数量 DESC"
+            ),
+            required_params=[],
+            example="本月高发事件有哪些类型？",
+        ),
     ]
 
-    engine = SmartDataEngine(schemas=schemas, vocabulary=vocabulary, templates=templates)
+    engine = SmartDataEngine(
+        schemas=schemas,
+        vocabulary=vocabulary,
+        templates=templates,
+        db_config=DB_CONFIG,
+    )
     tools = build_tools(engine)
 
     agent = create_deep_agent(
@@ -426,5 +604,7 @@ def create_smart_questioning_agent() -> Any:
 
 if __name__ == "__main__":
     # 示例：创建智能问数代理。运行时需要配置可用的 LLM 密钥。
+    # 若本地已安装 mysql-connector-python 且可访问 DB_CONFIG 所示的数据库，
+    # run_business_sql 将返回真实结果；否则会自动退回到模拟数据，保证可用性。
     agent = create_smart_questioning_agent()
     print("智能问数系统已就绪，可通过 agent.invoke({\"messages\": [...]}) 调用。")
