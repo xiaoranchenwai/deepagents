@@ -9,6 +9,7 @@ Agents can increasingly tackle long-horizon tasks, [with agent task length doubl
 - **[Documentation](https://docs.langchain.com/oss/python/deepagents/overview)** - Full overview and API reference
 - **[Quickstarts Repo](https://github.com/langchain-ai/deepagents-quickstarts)** - Examples and use-cases
 - **[CLI](libs/deepagents-cli/)** - Interactive command-line interface with skills, memory, and HITL workflows
+- **[中文多智能体问数示例](examples/smart_questioning_system.py)** - 遵循《智能问数系统说明》实现的中文多智能体问数编排方案，内置坪山 `pingshan_stat_info` 表结构与 DB_CONFIG（可连接 10.250.2.19:3306）并带有 MySQL 不可用时的自动降级模拟模式。
 
 ## 🚀 Quickstart
 
